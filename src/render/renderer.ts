@@ -1,16 +1,28 @@
-// Top-level renderer. M0 only wires WebGPU + a ground/grid pipeline.
-// WebGL2 fallback is reserved for a later milestone — for now we surface a
-// clear status to the user instead of pretending to render.
+// Top-level renderer. Owns the shared camera UBO and orchestrates pipelines.
+// Each frame: write camera, queue ground draw, queue road draw (if dirty rebuild
+// the mesh), submit. The renderer doesn't know about tools — main.ts feeds the
+// road graph and preview spec in via setRoadState.
 
 import type { Camera } from './camera';
 import { tryCreateGpuContext, resizeContext, type GpuContext } from './webgpu/context';
 import {
   createGroundPipeline,
+  createCameraUbo,
   drawGround,
   ensureDepth,
-  updateGroundCamera,
+  writeCameraUbo,
   type GroundPipeline,
 } from './webgpu/groundPipeline';
+import {
+  createRoadPipeline,
+  drawRoads,
+  uploadCommitted,
+  uploadPreview,
+  type RoadPipeline,
+} from './webgpu/roadPipeline';
+import { buildPreviewMesh, buildRoadMesh, DEFAULT_ROAD_OPTS } from '../sim/road/mesh';
+import type { RoadGraph } from '../sim/road/graph';
+import type { RoadPreviewSpec } from '../tools/types';
 
 export type RendererStatus =
   | { kind: 'ready'; backend: 'webgpu' }
@@ -20,6 +32,7 @@ export interface Renderer {
   status: RendererStatus;
   resize: (cssW: number, cssH: number, dpr: number) => void;
   draw: (cam: Camera) => void;
+  setRoadState: (graph: RoadGraph | null, preview: RoadPreviewSpec | null) => void;
   destroy: () => void;
 }
 
@@ -33,6 +46,7 @@ export const createRenderer = async (canvas: HTMLCanvasElement): Promise<Rendere
       },
       resize: () => undefined,
       draw: () => undefined,
+      setRoadState: () => undefined,
       destroy: () => undefined,
     };
   }
@@ -40,15 +54,48 @@ export const createRenderer = async (canvas: HTMLCanvasElement): Promise<Rendere
 };
 
 const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
-  const ground: GroundPipeline = createGroundPipeline(gpu.device, gpu.format);
+  const cameraUbo = createCameraUbo(gpu.device);
+  const ground: GroundPipeline = createGroundPipeline(gpu.device, gpu.format, cameraUbo);
+  const road: RoadPipeline = createRoadPipeline(gpu.device, gpu.format, cameraUbo);
+
+  let lastGraph: RoadGraph | null = null;
+  let lastGraphVersion = -1;
+  let lastPreview: RoadPreviewSpec | null = null;
+  // Cheap dirty signal: deep-equal preview keys (object identity is enough since
+  // the tool builds a new spec object each call).
+  let lastPreviewRef: RoadPreviewSpec | null = null;
 
   return {
     status: { kind: 'ready', backend: 'webgpu' },
+
     resize: (cssW, cssH, dpr) => resizeContext(gpu, cssW, cssH, dpr),
+
+    setRoadState: (graph, preview) => {
+      if (graph !== lastGraph || (graph && graph.version !== lastGraphVersion)) {
+        lastGraph = graph;
+        lastGraphVersion = graph?.version ?? -1;
+        if (graph) {
+          uploadCommitted(gpu.device, road, buildRoadMesh(graph));
+        } else {
+          uploadCommitted(gpu.device, road, { positions: new Float32Array(0), indices: new Uint32Array(0), vertexCount: 0, indexCount: 0 });
+        }
+      }
+      if (preview !== lastPreviewRef) {
+        lastPreviewRef = preview;
+        lastPreview = preview;
+        if (preview) {
+          uploadPreview(gpu.device, road, buildPreviewMesh(preview.p0, preview.c0, preview.c1, preview.p1, DEFAULT_ROAD_OPTS));
+        } else {
+          uploadPreview(gpu.device, road, null);
+        }
+      }
+      void lastPreview;
+    },
+
     draw: (cam: Camera) => {
       const w = gpu.canvas.width, h = gpu.canvas.height;
       const depthView = ensureDepth(gpu.device, ground, w, h);
-      updateGroundCamera(gpu.device, ground, cam.viewProj, cam.eye);
+      writeCameraUbo(gpu.device, cameraUbo, cam.viewProj, cam.eye);
 
       const encoder = gpu.device.createCommandEncoder();
       const view = gpu.context.getCurrentTexture().createView();
@@ -67,13 +114,21 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
         },
       });
       drawGround(pass, ground);
+      drawRoads(pass, road);
       pass.end();
       gpu.device.queue.submit([encoder.finish()]);
     },
+
     destroy: () => {
+      cameraUbo.destroy();
       if (ground.depth) ground.depth.destroy();
       ground.vbuf.destroy();
-      ground.cameraUbo.destroy();
+      road.vbuf.destroy();
+      road.ibuf.destroy();
+      road.previewVbuf.destroy();
+      road.previewIbuf.destroy();
+      road.committedStyleUbo.destroy();
+      road.previewStyleUbo.destroy();
     },
   };
 };

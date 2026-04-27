@@ -11,9 +11,9 @@ export interface ToolDef {
 export const DEFAULT_TOOLS: ToolDef[] = [
   { id: 'select',   label: '선택',         group: '기본',   enabled: true  },
   { id: 'pan',      label: '이동(공간)',    group: '기본',   enabled: true  },
-  { id: 'road-straight', label: '도로(직선)', group: '도로', enabled: false },
-  { id: 'road-curved',   label: '도로(곡선)', group: '도로', enabled: false },
-  { id: 'road-erase',    label: '도로(철거)', group: '도로', enabled: false },
+  { id: 'road-straight', label: '도로(직선)', group: '도로', enabled: true  },
+  { id: 'road-curved',   label: '도로(곡선)', group: '도로', enabled: true  },
+  { id: 'road-erase',    label: '도로(철거)', group: '도로', enabled: true  },
   { id: 'zone-res',  label: '주거 존',     group: '존지정', enabled: false },
   { id: 'zone-com',  label: '상업 존',     group: '존지정', enabled: false },
   { id: 'zone-ind',  label: '산업 존',     group: '존지정', enabled: false },
