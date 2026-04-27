@@ -17,8 +17,8 @@ export const DEFAULT_TOOLS: ToolDef[] = [
   { id: 'zone-res',  label: '주거 존',     group: '존지정', enabled: false },
   { id: 'zone-com',  label: '상업 존',     group: '존지정', enabled: false },
   { id: 'zone-ind',  label: '산업 존',     group: '존지정', enabled: false },
-  { id: 'save',      label: '저장',        group: '파일',   enabled: false },
-  { id: 'load',      label: '불러오기',    group: '파일',   enabled: false },
+  { id: 'save',      label: '저장',        group: '파일',   enabled: true  },
+  { id: 'load',      label: '불러오기',    group: '파일',   enabled: true  },
 ];
 
 export interface Toolbar {

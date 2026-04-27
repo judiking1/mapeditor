@@ -4,6 +4,18 @@ import { createCamera, updateCamera } from '../render/camera';
 import { attachCameraControls } from '../render/cameraControl';
 import { createRenderer } from '../render/renderer';
 import { createRoadGraph } from '../sim/road/graph';
+import {
+  autoSave,
+  decodeBytes,
+  encodeBundle,
+  loadFromSlot,
+  pickFile,
+  replaceGraphInPlace,
+  saveToSlot,
+  tryLoadAutosave,
+  type WorldMeta,
+} from '../io/save';
+import { openSaveDialog } from '../ui/saveDialog';
 import { attachToolHost } from '../tools/toolHost';
 import { createCurvedRoadTool, createEraseTool, createStraightRoadTool } from '../tools/roadTool';
 import type { Tool } from '../tools/types';
@@ -29,7 +41,13 @@ fitCanvas();
 
 attachCameraControls(canvas, cam);
 
-// Editor state
+const worldMeta: WorldMeta = {
+  seed: 1,
+  worldWidthCells: 1024,
+  worldHeightCells: 1024,
+  cellSize: 8,
+};
+
 const roadGraph = createRoadGraph();
 const toolHost = attachToolHost({ canvas, camera: cam, groundY: 0 });
 
@@ -41,13 +59,47 @@ const toolRegistry: Record<string, Tool | null> = {
   'road-erase': createEraseTool(roadGraph),
 };
 
+const openDialog = (): void => {
+  openSaveDialog({
+    defaultName: `city-${new Date().toISOString().slice(0, 16).replace(':', '')}`,
+    onSave: async (name) => {
+      await saveToSlot(roadGraph, worldMeta, name);
+      hud.setHint(`"${name}" 저장 완료`);
+    },
+    onLoad: async (id) => {
+      const { meta, bundle } = await loadFromSlot(id);
+      replaceGraphInPlace(roadGraph, bundle.graph);
+      hud.setHint(`"${meta.name}" 불러옴`);
+    },
+    onExport: async () => {
+      const name = `city-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}`;
+      const bytes = encodeBundle(roadGraph, worldMeta, name);
+      return { bytes, suggestedName: name };
+    },
+    onImport: async () => {
+      const file = await pickFile();
+      if (!file) return;
+      const buf = await file.arrayBuffer();
+      const bundle = decodeBytes(new Uint8Array(buf));
+      replaceGraphInPlace(roadGraph, bundle.graph);
+      hud.setHint(`"${bundle.meta.name}" 파일에서 불러옴`);
+    },
+  });
+};
+
 toolbar.on((id) => {
+  if (id === 'save' || id === 'load') {
+    openDialog();
+    // Reset to a safe selection so clicking Save/Load again re-opens.
+    toolbar.setActive('select');
+    return;
+  }
   const t = toolRegistry[id] ?? null;
   toolHost.setActive(t);
-  if (id === 'road-straight') hud.setHint('도로(직선): 좌클릭으로 시작점/끝점. ESC로 초기화. Shift+드래그/우클릭은 카메라.');
-  else if (id === 'road-curved') hud.setHint('도로(곡선): 좌클릭으로 시작점→꺾는점→끝점 순서. ESC로 초기화.');
+  if (id === 'road-straight') hud.setHint('도로(직선): 좌클릭 시작점/끝점, 연속 클릭으로 체인. ESC 초기화. Shift+드래그=카메라.');
+  else if (id === 'road-curved') hud.setHint('도로(곡선): 좌클릭 시작점→꺾는점→끝점. ESC 초기화.');
   else if (id === 'road-erase') hud.setHint('도로(철거): 도로 위 좌클릭으로 해당 세그먼트 삭제.');
-  else hud.setHint('툴 선택 — 도로 그룹에서 도구를 골라보세요.');
+  else hud.setHint('툴 선택 — 좌측에서 도구를 골라보세요.');
 });
 
 const main = async (): Promise<void> => {
@@ -57,8 +109,31 @@ const main = async (): Promise<void> => {
     hud.setHint(renderer.status.reason);
   } else {
     hud.setRenderer(renderer.status.backend, 'ok');
-    hud.setHint('우클릭=회전, 휠=줌, WASD=이동, Shift+드래그=패닝. 좌측에서 도구를 선택하세요.');
+    hud.setHint('우클릭=회전, 휠=줌, WASD=이동, Shift+드래그=패닝.');
   }
+
+  // Try restoring the last autosave so reloads don't lose work.
+  try {
+    const restored = await tryLoadAutosave();
+    if (restored && (restored.graph.nodeCount > 0 || restored.graph.segCount > 0)) {
+      replaceGraphInPlace(roadGraph, restored.graph);
+      hud.setHint('자동저장 복원됨');
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('autosave restore failed', e);
+  }
+
+  // Periodic autosave: only when the graph version has changed since last write.
+  let lastSavedVersion = roadGraph.version;
+  setInterval(() => {
+    if (roadGraph.version === lastSavedVersion) return;
+    lastSavedVersion = roadGraph.version;
+    autoSave(roadGraph, worldMeta).catch((e: unknown) => {
+      // eslint-disable-next-line no-console
+      console.warn('autosave failed', e);
+    });
+  }, 8000);
 
   const worker = new Worker(new URL('../worker/sim.worker.ts', import.meta.url), { type: 'module' });
   const post = (m: MainToSim): void => worker.postMessage(m);
@@ -67,7 +142,13 @@ const main = async (): Promise<void> => {
     switch (msg.type) {
       case 'ready':
         hud.setWorker(msg.capabilities.sab ? 'ready (sab)' : 'ready', 'ok');
-        post({ type: 'init', seed: 1, worldWidthCells: 1024, worldHeightCells: 1024, cellSizeMeters: 8 });
+        post({
+          type: 'init',
+          seed: worldMeta.seed,
+          worldWidthCells: worldMeta.worldWidthCells,
+          worldHeightCells: worldMeta.worldHeightCells,
+          cellSizeMeters: worldMeta.cellSize,
+        });
         break;
       case 'tick':
         hud.setTick(msg.simTick);
@@ -97,9 +178,6 @@ const main = async (): Promise<void> => {
     const r = canvas.getBoundingClientRect();
     renderer.resize(r.width, r.height, Math.min(2, devicePixelRatio || 1));
 
-    // Feed the renderer the latest road state. preview() returns a fresh object
-    // when present, so identity comparison inside the renderer is enough to
-    // detect changes.
     const preview = toolHost.active()?.preview().road ?? null;
     renderer.setRoadState(roadGraph, preview);
 
