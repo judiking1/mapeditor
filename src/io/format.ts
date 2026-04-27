@@ -20,12 +20,16 @@ import {
   createRoadGraph,
   type RoadGraph,
 } from '../sim/road/graph';
+import { createZoneGrid, type ZoneGrid } from '../sim/zoning/grid';
+import { addBuilding, createBuildingStore, type BuildingStore } from '../sim/buildings/store';
 
 const MAGIC = 'CSIM';
 const FILE_VERSION = 1;
 
 export const TAG_META = 'META';
 export const TAG_ROAD = 'ROAD';
+export const TAG_ZONE = 'ZONE';
+export const TAG_BLDG = 'BLDG';
 
 export interface SaveMeta {
   name: string;
@@ -39,6 +43,8 @@ export interface SaveMeta {
 export interface SaveBundle {
   meta: SaveMeta;
   graph: RoadGraph;
+  zone: ZoneGrid;
+  buildings: BuildingStore;
 }
 
 const writeChunk = (w: Writer, tag: string, body: (w: Writer) => void): void => {
@@ -105,12 +111,65 @@ const writeRoad = (w: Writer, g: RoadGraph): void => {
   });
 };
 
+const writeZone = (w: Writer, z: ZoneGrid): void => {
+  writeChunk(w, TAG_ZONE, (w) => {
+    w.u32(1); // schema
+    w.u32(z.width);
+    w.u32(z.height);
+    w.f32(z.cellSize);
+    w.f32(z.originX);
+    w.f32(z.originZ);
+    // RLE: pairs of (count u16, value u8). Cap each run at 65535. Trailing
+    // zeros are still emitted — the format is dense, not sparse, but RLE is
+    // already a big win since most cells are empty.
+    let i = 0;
+    while (i < z.cells.length) {
+      const v = z.cells[i]!;
+      let j = i + 1;
+      while (j < z.cells.length && z.cells[j]! === v && j - i < 0xffff) j++;
+      w.u16(j - i);
+      w.u8(v);
+      i = j;
+    }
+    // Sentinel u16=0 marks end of stream.
+    w.u16(0);
+    w.u8(0);
+  });
+};
+
+const writeBuildings = (w: Writer, b: BuildingStore): void => {
+  writeChunk(w, TAG_BLDG, (w) => {
+    w.u32(1); // schema
+    // Build a building-id -> cell-index reverse lookup in one pass over the
+    // cell map (O(cells)), avoiding an O(buildings * cells) loop.
+    const idToCell = new Int32Array(b.count);
+    idToCell.fill(-1);
+    for (let c = 0; c < b.cellToBldg.length; c++) {
+      const id = b.cellToBldg[c]!;
+      if (id >= 0) idToCell[id] = c;
+    }
+    let live = 0;
+    for (let i = 0; i < b.count; i++) if (b.alive[i]) live++;
+    w.u32(live);
+    for (let i = 0; i < b.count; i++) {
+      if (!b.alive[i]) continue;
+      w.f32(b.posX[i]!);
+      w.f32(b.posZ[i]!);
+      w.f32(b.height[i]!);
+      w.i32(b.typeAndSeed[i]!);
+      w.i32(idToCell[i]!);
+    }
+  });
+};
+
 export const encode = (bundle: SaveBundle): Uint8Array => {
-  const w = new Writer(8 * 1024);
+  const w = new Writer(64 * 1024);
   w.tag(MAGIC);
   w.u32(FILE_VERSION);
   writeMeta(w, bundle.meta);
   writeRoad(w, bundle.graph);
+  writeZone(w, bundle.zone);
+  writeBuildings(w, bundle.buildings);
   return w.finish();
 };
 
@@ -149,6 +208,48 @@ const readRoadInto = (r: Reader, payloadEnd: number, g: RoadGraph): void => {
   if (r.pos > payloadEnd) throw new Error('ROAD payload overrun');
 };
 
+const readZone = (r: Reader, payloadEnd: number): ZoneGrid => {
+  const schema = r.u32();
+  if (schema !== 1) throw new Error(`ZONE schema ${schema} unsupported`);
+  const width = r.u32();
+  const height = r.u32();
+  const cellSize = r.f32();
+  const originX = r.f32();
+  const originZ = r.f32();
+  const grid = createZoneGrid(width, height, cellSize);
+  grid.originX = originX;
+  grid.originZ = originZ;
+  let i = 0;
+  while (true) {
+    if (r.pos > payloadEnd) throw new Error('ZONE payload overrun');
+    const run = r.u16();
+    const v = r.u8();
+    if (run === 0) break;
+    if (i + run > grid.cells.length) throw new Error('ZONE RLE exceeds grid');
+    grid.cells.fill(v, i, i + run);
+    i += run;
+  }
+  return grid;
+};
+
+const readBuildingsInto = (
+  r: Reader, payloadEnd: number, store: BuildingStore,
+): void => {
+  const schema = r.u32();
+  if (schema !== 1) throw new Error(`BLDG schema ${schema} unsupported`);
+  const n = r.u32();
+  for (let i = 0; i < n; i++) {
+    const px = r.f32();
+    const pz = r.f32();
+    const h = r.f32();
+    const ts = r.i32();
+    const cellIdx = r.i32();
+    if (cellIdx < 0 || cellIdx >= store.cellToBldg.length) continue;
+    addBuilding(store, cellIdx, px, pz, h, ts & 0xf, (ts >>> 4) & 0x0fffffff);
+  }
+  if (r.pos > payloadEnd) throw new Error('BLDG payload overrun');
+};
+
 export const decode = (buf: ArrayBuffer): SaveBundle => {
   const r = new Reader(buf);
   if (r.remaining < 8) throw new Error('file too small');
@@ -161,6 +262,14 @@ export const decode = (buf: ArrayBuffer): SaveBundle => {
 
   let meta: SaveMeta | null = null;
   const graph = createRoadGraph();
+  // Defaults; overwritten by ZONE chunk if present.
+  let zone: ZoneGrid = createZoneGrid();
+  // Buildings store needs the zone size; allocate after we read ZONE,
+  // but defer reading BLDG until then. We do a two-pass: scan chunks first,
+  // remember offsets, then process in dependency order.
+  // For simplicity we just process META, ROAD, ZONE in stream order, and
+  // collect any BLDG chunk into a buffered slice that we replay last.
+  let bldgPayload: { start: number; end: number } | null = null;
 
   while (!r.atEnd) {
     if (r.remaining < 8) throw new Error('truncated chunk header');
@@ -171,18 +280,20 @@ export const decode = (buf: ArrayBuffer): SaveBundle => {
     switch (tag) {
       case TAG_META: meta = readMeta(r, end); break;
       case TAG_ROAD: readRoadInto(r, end, graph); break;
-      default:
-        // Unknown chunk — skip forward.
-        r.pos = end;
-        break;
+      case TAG_ZONE: zone = readZone(r, end); break;
+      case TAG_BLDG: bldgPayload = { start: r.pos, end }; break;
+      default: break; // unknown — skip
     }
-    if (r.pos !== end) {
-      // Schema may have written fewer bytes than declared (forward compat) —
-      // jump to the declared end.
-      r.pos = end;
-    }
+    if (r.pos !== end) r.pos = end;
+  }
+
+  const buildings = createBuildingStore(16384, zone.cells.length);
+  if (bldgPayload) {
+    const r2 = new Reader(buf);
+    r2.pos = bldgPayload.start;
+    readBuildingsInto(r2, bldgPayload.end, buildings);
   }
 
   if (!meta) throw new Error('save missing META chunk');
-  return { meta, graph };
+  return { meta, graph, zone, buildings };
 };

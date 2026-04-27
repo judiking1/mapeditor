@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { addNode, addSegment, createRoadGraph } from '../sim/road/graph';
 import { straightControls } from '../sim/road/bezier';
 import { decode, encode } from './format';
+import { createZoneGrid, ZONE_RES } from '../sim/zoning/grid';
+import { addBuilding, createBuildingStore } from '../sim/buildings/store';
 
 const sampleBundle = () => {
   const graph = createRoadGraph();
@@ -12,6 +14,11 @@ const sampleBundle = () => {
   const bc = straightControls([100, 0, 50], [200, 0, 0]);
   addSegment(graph, a, b, ab.c0, ab.c1, 0);
   addSegment(graph, b, c, bc.c0, bc.c1, 1);
+  const zone = createZoneGrid(64, 64, 16);
+  zone.cells[0] = ZONE_RES;
+  zone.cells[5] = ZONE_RES;
+  const buildings = createBuildingStore(128, zone.cells.length);
+  addBuilding(buildings, 0, 0, 0, 12, ZONE_RES, 0xabc);
   return {
     meta: {
       name: 'test-city',
@@ -22,6 +29,8 @@ const sampleBundle = () => {
       cellSize: 8,
     },
     graph,
+    zone,
+    buildings,
   };
 };
 
@@ -51,13 +60,30 @@ describe('save format', () => {
     const b = addNode(graph, [100, 0, 0]);
     const ab = straightControls([0, 0, 0], [100, 0, 0]);
     const seg = addSegment(graph, a, b, ab.c0, ab.c1, 0);
-    // Mark seg dead
     graph.segFlags[seg] = 0;
-    const bundle = { meta: { name: '', saveTimeMs: 0, seed: 0, worldWidthCells: 1, worldHeightCells: 1, cellSize: 1 }, graph };
+    const zone = createZoneGrid(8, 8, 16);
+    const buildings = createBuildingStore(16, zone.cells.length);
+    const bundle = {
+      meta: { name: '', saveTimeMs: 0, seed: 0, worldWidthCells: 1, worldHeightCells: 1, cellSize: 1 },
+      graph, zone, buildings,
+    };
     const bytes = encode(bundle);
     const decoded = decode(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
     let liveSeg = 0;
     for (let i = 0; i < decoded.graph.segCount; i++) if (decoded.graph.segFlags[i]! & 1) liveSeg++;
     expect(liveSeg).toBe(0);
+  });
+
+  it('round-trips zone cells and buildings', () => {
+    const bundle = sampleBundle();
+    const bytes = encode(bundle);
+    const decoded = decode(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+    expect(decoded.zone.cells[0]).toBe(ZONE_RES);
+    expect(decoded.zone.cells[5]).toBe(ZONE_RES);
+    expect(decoded.zone.cells[1]).toBe(0);
+    let live = 0;
+    for (let i = 0; i < decoded.buildings.count; i++) if (decoded.buildings.alive[i]) live++;
+    expect(live).toBe(1);
+    expect(decoded.buildings.cellToBldg[0]).toBeGreaterThanOrEqual(0);
   });
 });

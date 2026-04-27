@@ -9,6 +9,15 @@ import {
   isSegAlive,
   type RoadGraph,
 } from '../sim/road/graph';
+import {
+  createZoneGrid,
+  type ZoneGrid,
+} from '../sim/zoning/grid';
+import {
+  addBuilding,
+  createBuildingStore,
+  type BuildingStore,
+} from '../sim/buildings/store';
 import { decode, encode, type SaveBundle, type SaveMeta } from './format';
 import {
   deleteSlot,
@@ -28,7 +37,13 @@ export interface WorldMeta {
   cellSize: number;
 }
 
-const buildBundle = (graph: RoadGraph, world: WorldMeta, name: string): SaveBundle => ({
+const buildBundle = (
+  graph: RoadGraph,
+  zone: ZoneGrid,
+  buildings: BuildingStore,
+  world: WorldMeta,
+  name: string,
+): SaveBundle => ({
   meta: {
     name,
     saveTimeMs: Date.now(),
@@ -38,7 +53,55 @@ const buildBundle = (graph: RoadGraph, world: WorldMeta, name: string): SaveBund
     cellSize: world.cellSize,
   },
   graph,
+  zone,
+  buildings,
 });
+
+// In-place replace zone grid contents. Copies the loaded grid's cells into
+// the live grid; if dimensions differ, the live grid is rebuilt to match.
+export const replaceZoneInPlace = (live: ZoneGrid, loaded: ZoneGrid): void => {
+  if (live.width !== loaded.width || live.height !== loaded.height) {
+    const fresh = createZoneGrid(loaded.width, loaded.height, loaded.cellSize);
+    live.width = fresh.width;
+    live.height = fresh.height;
+    live.cellSize = fresh.cellSize;
+    live.originX = fresh.originX;
+    live.originZ = fresh.originZ;
+    live.cells = fresh.cells;
+  }
+  live.cellSize = loaded.cellSize;
+  live.originX = loaded.originX;
+  live.originZ = loaded.originZ;
+  live.cells.set(loaded.cells);
+  live.version++;
+};
+
+// Replace buildings store; bytes-equivalent by re-adding each live entry.
+export const replaceBuildingsInPlace = (live: BuildingStore, loaded: BuildingStore): void => {
+  live.count = 0;
+  live.alive.fill(0);
+  live.cellToBldg.fill(-1);
+  live.free.length = 0;
+  // Reverse-lookup loaded.cellToBldg → cell index per loaded slot.
+  const idToCell = new Int32Array(loaded.count);
+  idToCell.fill(-1);
+  for (let c = 0; c < loaded.cellToBldg.length; c++) {
+    const id = loaded.cellToBldg[c]!;
+    if (id >= 0) idToCell[id] = c;
+  }
+  for (let i = 0; i < loaded.count; i++) {
+    if (!loaded.alive[i]) continue;
+    const cell = idToCell[i]!;
+    if (cell < 0 || cell >= live.cellToBldg.length) continue;
+    addBuilding(live, cell,
+      loaded.posX[i]!, loaded.posZ[i]!,
+      loaded.height[i]!,
+      loaded.typeAndSeed[i]! & 0xf,
+      (loaded.typeAndSeed[i]! >>> 4) & 0x0fffffff,
+    );
+  }
+  live.version++;
+};
 
 // In-place replace: clear the live graph, then copy nodes/segments out of the
 // loaded bundle. We keep the existing object so other modules' references
@@ -77,21 +140,26 @@ export const replaceGraphInPlace = (live: RoadGraph, loaded: RoadGraph): void =>
   }
 };
 
-export const encodeBundle = (graph: RoadGraph, world: WorldMeta, name: string): Uint8Array =>
-  encode(buildBundle(graph, world, name));
+export const encodeBundle = (
+  graph: RoadGraph, zone: ZoneGrid, buildings: BuildingStore,
+  world: WorldMeta, name: string,
+): Uint8Array =>
+  encode(buildBundle(graph, zone, buildings, world, name));
 
 export const saveToSlot = async (
-  graph: RoadGraph, world: WorldMeta, name: string,
+  graph: RoadGraph, zone: ZoneGrid, buildings: BuildingStore,
+  world: WorldMeta, name: string,
 ): Promise<{ id: number; bytes: Uint8Array }> => {
-  const bytes = encodeBundle(graph, world, name);
+  const bytes = encodeBundle(graph, zone, buildings, world, name);
   const id = await putSlot(name, bytes);
   return { id, bytes };
 };
 
 export const overwriteSlot = async (
-  id: number, graph: RoadGraph, world: WorldMeta, name: string,
+  id: number, graph: RoadGraph, zone: ZoneGrid, buildings: BuildingStore,
+  world: WorldMeta, name: string,
 ): Promise<Uint8Array> => {
-  const bytes = encodeBundle(graph, world, name);
+  const bytes = encodeBundle(graph, zone, buildings, world, name);
   await updateSlot(id, name, bytes);
   return bytes;
 };
@@ -134,8 +202,10 @@ export const pickFile = (): Promise<File | null> => new Promise((resolve) => {
 
 const AUTOSAVE_KEY = 'autosave-v1';
 
-export const autoSave = async (graph: RoadGraph, world: WorldMeta): Promise<void> => {
-  const bytes = encodeBundle(graph, world, '<autosave>');
+export const autoSave = async (
+  graph: RoadGraph, zone: ZoneGrid, buildings: BuildingStore, world: WorldMeta,
+): Promise<void> => {
+  const bytes = encodeBundle(graph, zone, buildings, world, '<autosave>');
   await putKv(AUTOSAVE_KEY, bytes);
 };
 

@@ -23,9 +23,24 @@ import {
   uploadVehicleInstances,
   type VehiclePipeline,
 } from './webgpu/vehiclePipeline';
+import {
+  createBuildingPipeline,
+  drawBuildings,
+  uploadBuildingInstances,
+  type BuildingPipeline,
+} from './webgpu/buildingPipeline';
+import {
+  createZoneOverlayPipeline,
+  drawZoneOverlay,
+  uploadZoneTextureIfDirty,
+  writeOverlayParams,
+  type ZoneOverlayPipeline,
+} from './webgpu/zoneOverlayPipeline';
 import { buildPreviewMesh, buildRoadMesh, DEFAULT_ROAD_OPTS } from '../sim/road/mesh';
 import type { RoadGraph } from '../sim/road/graph';
 import type { RoadPreviewSpec } from '../tools/types';
+import { packInstanceBuffer, type BuildingStore } from '../sim/buildings/store';
+import type { ZoneGrid } from '../sim/zoning/grid';
 
 export type RendererStatus =
   | { kind: 'ready'; backend: 'webgpu' }
@@ -43,6 +58,10 @@ export interface Renderer {
   setRoadState: (graph: RoadGraph | null, preview: RoadPreviewSpec | null) => void;
   setVehicleFrame: (frame: VehicleFrame | null) => void;
   initVehicles: (capacity: number) => void;
+  initZoning: (grid: ZoneGrid, store: BuildingStore) => void;
+  setZoneOverlayVisibility: (v: number) => void;
+  syncBuildings: (store: BuildingStore) => void;
+  syncZones: (grid: ZoneGrid) => void;
   destroy: () => void;
 }
 
@@ -59,6 +78,10 @@ export const createRenderer = async (canvas: HTMLCanvasElement): Promise<Rendere
       setRoadState: () => undefined,
       setVehicleFrame: () => undefined,
       initVehicles: () => undefined,
+      initZoning: () => undefined,
+      setZoneOverlayVisibility: () => undefined,
+      syncBuildings: () => undefined,
+      syncZones: () => undefined,
       destroy: () => undefined,
     };
   }
@@ -70,10 +93,13 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
   const ground: GroundPipeline = createGroundPipeline(gpu.device, gpu.format, cameraUbo);
   const road: RoadPipeline = createRoadPipeline(gpu.device, gpu.format, cameraUbo);
   let vehicle: VehiclePipeline | null = null;
+  let building: BuildingPipeline | null = null;
+  let zoneOverlay: ZoneOverlayPipeline | null = null;
 
   let lastGraph: RoadGraph | null = null;
   let lastGraphVersion = -1;
   let lastPreviewRef: RoadPreviewSpec | null = null;
+  let lastBuildingVersion = -1;
 
   return {
     status: { kind: 'ready', backend: 'webgpu' },
@@ -114,6 +140,30 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
       uploadVehicleInstances(gpu.device, vehicle, frame.data, frame.count);
     },
 
+    initZoning: (grid, _store) => {
+      if (!building) building = createBuildingPipeline(gpu.device, gpu.format, cameraUbo, 16384);
+      if (!zoneOverlay) zoneOverlay = createZoneOverlayPipeline(gpu.device, gpu.format, cameraUbo, grid);
+      void _store;
+    },
+
+    setZoneOverlayVisibility: (v: number) => {
+      if (!zoneOverlay) return;
+      writeOverlayParams(gpu.device, zoneOverlay, v);
+    },
+
+    syncBuildings: (store) => {
+      if (!building) return;
+      if (store.version === lastBuildingVersion) return;
+      lastBuildingVersion = store.version;
+      const packed = packInstanceBuffer(store);
+      uploadBuildingInstances(gpu.device, building, packed.data, packed.count);
+    },
+
+    syncZones: (grid) => {
+      if (!zoneOverlay) return;
+      uploadZoneTextureIfDirty(gpu.device, zoneOverlay, grid);
+    },
+
     draw: (cam: Camera) => {
       const w = gpu.canvas.width, h = gpu.canvas.height;
       const depthView = ensureDepth(gpu.device, ground, w, h);
@@ -137,7 +187,9 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
       });
       drawGround(pass, ground);
       drawRoads(pass, road);
+      if (building) drawBuildings(pass, building);
       if (vehicle) drawVehicles(pass, vehicle);
+      if (zoneOverlay) drawZoneOverlay(pass, zoneOverlay);
       pass.end();
       gpu.device.queue.submit([encoder.finish()]);
     },
@@ -156,6 +208,16 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
         vehicle.vbuf.destroy();
         vehicle.ibuf.destroy();
         vehicle.instanceBuf.destroy();
+      }
+      if (building) {
+        building.vbuf.destroy();
+        building.ibuf.destroy();
+        building.instanceBuf.destroy();
+      }
+      if (zoneOverlay) {
+        zoneOverlay.vbuf.destroy();
+        zoneOverlay.paramsUbo.destroy();
+        zoneOverlay.texture.destroy();
       }
     },
   };

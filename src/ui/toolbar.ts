@@ -21,9 +21,9 @@ export const DEFAULT_TOOLS: ToolDef[] = [
   { id: 'time-1x',    label: '1x',          group: '시간',   enabled: true  },
   { id: 'time-3x',    label: '3x',          group: '시간',   enabled: true  },
   { id: 'time-9x',    label: '9x',          group: '시간',   enabled: true  },
-  { id: 'zone-res',  label: '주거 존',     group: '존지정', enabled: false },
-  { id: 'zone-com',  label: '상업 존',     group: '존지정', enabled: false },
-  { id: 'zone-ind',  label: '산업 존',     group: '존지정', enabled: false },
+  { id: 'zone-res',  label: '주거 존',     group: '존지정', enabled: true  },
+  { id: 'zone-com',  label: '상업 존',     group: '존지정', enabled: true  },
+  { id: 'zone-ind',  label: '산업 존',     group: '존지정', enabled: true  },
   { id: 'save',      label: '저장',        group: '파일',   enabled: true  },
   { id: 'load',      label: '불러오기',    group: '파일',   enabled: true  },
 ];
