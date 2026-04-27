@@ -1,7 +1,4 @@
 // Top-level renderer. Owns the shared camera UBO and orchestrates pipelines.
-// Each frame: write camera, queue ground draw, queue road draw (if dirty rebuild
-// the mesh), submit. The renderer doesn't know about tools — main.ts feeds the
-// road graph and preview spec in via setRoadState.
 
 import type { Camera } from './camera';
 import { tryCreateGpuContext, resizeContext, type GpuContext } from './webgpu/context';
@@ -20,6 +17,12 @@ import {
   uploadPreview,
   type RoadPipeline,
 } from './webgpu/roadPipeline';
+import {
+  createVehiclePipeline,
+  drawVehicles,
+  uploadVehicleInstances,
+  type VehiclePipeline,
+} from './webgpu/vehiclePipeline';
 import { buildPreviewMesh, buildRoadMesh, DEFAULT_ROAD_OPTS } from '../sim/road/mesh';
 import type { RoadGraph } from '../sim/road/graph';
 import type { RoadPreviewSpec } from '../tools/types';
@@ -28,11 +31,18 @@ export type RendererStatus =
   | { kind: 'ready'; backend: 'webgpu' }
   | { kind: 'unsupported'; reason: string };
 
+export interface VehicleFrame {
+  data: Float32Array;
+  count: number;
+}
+
 export interface Renderer {
   status: RendererStatus;
   resize: (cssW: number, cssH: number, dpr: number) => void;
   draw: (cam: Camera) => void;
   setRoadState: (graph: RoadGraph | null, preview: RoadPreviewSpec | null) => void;
+  setVehicleFrame: (frame: VehicleFrame | null) => void;
+  initVehicles: (capacity: number) => void;
   destroy: () => void;
 }
 
@@ -47,6 +57,8 @@ export const createRenderer = async (canvas: HTMLCanvasElement): Promise<Rendere
       resize: () => undefined,
       draw: () => undefined,
       setRoadState: () => undefined,
+      setVehicleFrame: () => undefined,
+      initVehicles: () => undefined,
       destroy: () => undefined,
     };
   }
@@ -57,12 +69,10 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
   const cameraUbo = createCameraUbo(gpu.device);
   const ground: GroundPipeline = createGroundPipeline(gpu.device, gpu.format, cameraUbo);
   const road: RoadPipeline = createRoadPipeline(gpu.device, gpu.format, cameraUbo);
+  let vehicle: VehiclePipeline | null = null;
 
   let lastGraph: RoadGraph | null = null;
   let lastGraphVersion = -1;
-  let lastPreview: RoadPreviewSpec | null = null;
-  // Cheap dirty signal: deep-equal preview keys (object identity is enough since
-  // the tool builds a new spec object each call).
   let lastPreviewRef: RoadPreviewSpec | null = null;
 
   return {
@@ -82,14 +92,26 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
       }
       if (preview !== lastPreviewRef) {
         lastPreviewRef = preview;
-        lastPreview = preview;
         if (preview) {
           uploadPreview(gpu.device, road, buildPreviewMesh(preview.p0, preview.c0, preview.c1, preview.p1, DEFAULT_ROAD_OPTS));
         } else {
           uploadPreview(gpu.device, road, null);
         }
       }
-      void lastPreview;
+    },
+
+    initVehicles: (capacity: number) => {
+      if (vehicle) return;
+      vehicle = createVehiclePipeline(gpu.device, gpu.format, cameraUbo, capacity);
+    },
+
+    setVehicleFrame: (frame) => {
+      if (!vehicle) return;
+      if (!frame || frame.count === 0) {
+        vehicle.aliveCount = 0;
+        return;
+      }
+      uploadVehicleInstances(gpu.device, vehicle, frame.data, frame.count);
     },
 
     draw: (cam: Camera) => {
@@ -115,6 +137,7 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
       });
       drawGround(pass, ground);
       drawRoads(pass, road);
+      if (vehicle) drawVehicles(pass, vehicle);
       pass.end();
       gpu.device.queue.submit([encoder.finish()]);
     },
@@ -129,6 +152,11 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
       road.previewIbuf.destroy();
       road.committedStyleUbo.destroy();
       road.previewStyleUbo.destroy();
+      if (vehicle) {
+        vehicle.vbuf.destroy();
+        vehicle.ibuf.destroy();
+        vehicle.instanceBuf.destroy();
+      }
     },
   };
 };
