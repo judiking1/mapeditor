@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CitySim Web</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1015;
+        --panel: #111821;
+        --panel-2: #1a2330;
+        --border: #243142;
+        --accent: #4ea1ff;
+        --text: #e6edf3;
+        --muted: #8a98a8;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: -apple-system, system-ui, "Segoe UI", sans-serif; }
+      #app { position: fixed; inset: 0; display: grid; grid-template-rows: 40px 1fr 36px; grid-template-columns: 220px 1fr; }
+      header.titlebar { grid-column: 1 / 3; display: flex; align-items: center; padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--border); font-weight: 600; letter-spacing: 0.3px; }
+      header.titlebar .badge { margin-left: 8px; padding: 2px 6px; font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; }
+      aside.tools { background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; padding: 8px; }
+      .tool-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+      .tool-group h4 { margin: 4px 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); font-weight: 600; }
+      button.tool { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 13px; text-align: left; cursor: pointer; transition: border-color 120ms ease, background 120ms ease; }
+      button.tool:hover { border-color: #314257; }
+      button.tool[data-active="true"] { border-color: var(--accent); background: #1b2a3d; }
+      main.viewport { position: relative; overflow: hidden; }
+      canvas#stage { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+      .hud { position: absolute; pointer-events: none; }
+      .hud.tl { top: 8px; left: 8px; padding: 6px 8px; background: rgba(17,24,33,0.78); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; color: var(--muted); }
+      footer.statusbar { grid-column: 1 / 3; display: flex; align-items: center; gap: 16px; padding: 0 12px; background: var(--panel); border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+      footer.statusbar .sep { width: 1px; height: 16px; background: var(--border); }
+      .pill { padding: 1px 6px; border: 1px solid var(--border); border-radius: 999px; font-size: 11px; }
+      .pill.ok { color: #5fd07a; border-color: #2c5b3a; }
+      .pill.warn { color: #ffb454; border-color: #6a4a1f; }
+      .pill.err { color: #ff6b6b; border-color: #6a2929; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header class="titlebar">
+        <span>CitySim Web</span>
+        <span class="badge">M0 bootstrap</span>
+      </header>
+      <aside class="tools" id="tools"></aside>
+      <main class="viewport">
+        <canvas id="stage"></canvas>
+        <div class="hud tl" id="hud-tl">초기화 중…</div>
+      </main>
+      <footer class="statusbar">
+        <span>renderer: <span id="stat-renderer" class="pill warn">?</span></span>
+        <span class="sep"></span>
+        <span>worker: <span id="stat-worker" class="pill warn">?</span></span>
+        <span class="sep"></span>
+        <span>fps: <span id="stat-fps">–</span></span>
+        <span class="sep"></span>
+        <span>tick: <span id="stat-tick">–</span></span>
+      </footer>
+    </div>
+    <script type="module" src="/src/app/main.ts"></script>
+  </body>
+</html>

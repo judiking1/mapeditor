@@ -1,0 +1,12 @@
+node_modules
+dist
+dist-ssr
+.vite
+.cache
+*.log
+.DS_Store
+.idea
+.vscode
+coverage
+tsconfig.tsbuildinfo
+*.tsbuildinfo
