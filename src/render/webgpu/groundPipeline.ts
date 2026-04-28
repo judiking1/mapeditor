@@ -1,7 +1,9 @@
-// One large flat quad, world-space coordinates baked in. Shaded by ground.wgsl
-// to draw an anti-aliased grid that fades with distance.
+// Ground pipeline + the shared camera UBO. Depth + multisample resources are
+// owned by the renderer (see renderTargets.ts) so other pipelines can share
+// the same MSAA configuration.
 
 import { groundShader } from '../shaders/ground.wgsl';
+import { DEPTH_FORMAT, SAMPLE_COUNT } from './renderTargets';
 
 const QUAD_HALF = 4096;
 
@@ -9,11 +11,6 @@ export interface GroundPipeline {
   pipeline: GPURenderPipeline;
   vbuf: GPUBuffer;
   bindGroup: GPUBindGroup;
-  depth: GPUTexture | null;
-  depthView: GPUTextureView | null;
-  depthW: number;
-  depthH: number;
-  format: GPUTextureFormat;
 }
 
 export const createGroundPipeline = (
@@ -44,27 +41,19 @@ export const createGroundPipeline = (
     ],
   });
 
-  const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bindLayout] });
-
   const pipeline = device.createRenderPipeline({
-    layout: pipelineLayout,
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bindLayout] }),
     vertex: {
-      module,
-      entryPoint: 'vs',
-      buffers: [
-        {
-          arrayStride: 12,
-          attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
-        },
-      ],
+      module, entryPoint: 'vs',
+      buffers: [{
+        arrayStride: 12,
+        attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }],
+      }],
     },
-    fragment: {
-      module,
-      entryPoint: 'fs',
-      targets: [{ format }],
-    },
+    fragment: { module, entryPoint: 'fs', targets: [{ format }] },
     primitive: { topology: 'triangle-list', cullMode: 'none' },
-    depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
+    depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+    multisample: { count: SAMPLE_COUNT },
   });
 
   const bindGroup = device.createBindGroup({
@@ -72,12 +61,12 @@ export const createGroundPipeline = (
     entries: [{ binding: 0, resource: { buffer: cameraUbo } }],
   });
 
-  return { pipeline, vbuf, bindGroup, depth: null, depthView: null, depthW: 0, depthH: 0, format };
+  return { pipeline, vbuf, bindGroup };
 };
 
 export const createCameraUbo = (device: GPUDevice): GPUBuffer =>
   device.createBuffer({
-    size: 80, // mat4x4 viewProj (64) + vec4 eye (16)
+    size: 80,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -92,19 +81,6 @@ export const writeCameraUbo = (
   camStaging.set(viewProj, 0);
   camStaging[16] = eye[0]; camStaging[17] = eye[1]; camStaging[18] = eye[2]; camStaging[19] = 0;
   device.queue.writeBuffer(ubo, 0, camStaging.buffer, camStaging.byteOffset, camStaging.byteLength);
-};
-
-export const ensureDepth = (device: GPUDevice, gp: GroundPipeline, w: number, h: number): GPUTextureView => {
-  if (gp.depth && gp.depthW === w && gp.depthH === h && gp.depthView) return gp.depthView;
-  if (gp.depth) gp.depth.destroy();
-  gp.depth = device.createTexture({
-    size: { width: w, height: h },
-    format: 'depth24plus',
-    usage: GPUTextureUsage.RENDER_ATTACHMENT,
-  });
-  gp.depthView = gp.depth.createView();
-  gp.depthW = w; gp.depthH = h;
-  return gp.depthView;
 };
 
 export const drawGround = (

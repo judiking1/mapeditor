@@ -71,7 +71,19 @@ export const attachCameraControls = (canvas: HTMLCanvasElement, cam: Camera): ()
   const onWheel = (e: WheelEvent): void => {
     e.preventDefault();
     const factor = Math.exp(e.deltaY * 0.0015);
-    cam.distance = Math.max(20, Math.min(2000, cam.distance * factor));
+    const oldDist = cam.distance;
+    const newDist = Math.max(15, Math.min(2000, oldDist * factor));
+    if (newDist === oldDist) return;
+    // Zoom-toward-cursor: shift the focus target toward the world point
+    // currently under the cursor, scaled by how much the distance changed.
+    const [nx, ny] = ndc(e.clientX, e.clientY);
+    const ground = screenToGround(cam, nx, ny, cam.target[1]);
+    cam.distance = newDist;
+    if (ground) {
+      const k = 1 - newDist / oldDist;
+      cam.target[0] += (ground[0] - cam.target[0]) * k;
+      cam.target[2] += (ground[2] - cam.target[2]) * k;
+    }
     updateCamera(cam);
   };
 

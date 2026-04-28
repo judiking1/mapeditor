@@ -1,4 +1,9 @@
-// Top-level renderer. Owns the shared camera UBO and orchestrates pipelines.
+// Top-level renderer. Owns:
+//   - the shared camera UBO
+//   - shared multisample (4x) color + depth render targets
+//   - all rendering pipelines
+// Pipelines share the camera UBO and the same MSAA configuration so we can
+// render the entire scene in one pass with a single resolve into the swap chain.
 
 import type { Camera } from './camera';
 import { tryCreateGpuContext, resizeContext, type GpuContext } from './webgpu/context';
@@ -6,7 +11,6 @@ import {
   createGroundPipeline,
   createCameraUbo,
   drawGround,
-  ensureDepth,
   writeCameraUbo,
   type GroundPipeline,
 } from './webgpu/groundPipeline';
@@ -36,9 +40,17 @@ import {
   writeOverlayParams,
   type ZoneOverlayPipeline,
 } from './webgpu/zoneOverlayPipeline';
-import { buildPreviewMesh, buildRoadMesh, DEFAULT_ROAD_OPTS } from '../sim/road/mesh';
+import {
+  createJunctionCapPipeline,
+  drawJunctions,
+  uploadJunctions,
+  type JunctionCapPipeline,
+} from './webgpu/junctionCapPipeline';
+import { createRenderTargets, ensureRenderTargets, type RenderTargets } from './webgpu/renderTargets';
+import { buildPreviewMesh, buildRoadMesh } from '../sim/road/mesh';
 import type { RoadGraph } from '../sim/road/graph';
 import type { RoadPreviewSpec } from '../tools/types';
+import { collectJunctions } from '../sim/road/junctions';
 import { packInstanceBuffer, type BuildingStore } from '../sim/buildings/store';
 import type { ZoneGrid } from '../sim/zoning/grid';
 
@@ -90,8 +102,10 @@ export const createRenderer = async (canvas: HTMLCanvasElement): Promise<Rendere
 
 const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
   const cameraUbo = createCameraUbo(gpu.device);
+  const targets: RenderTargets = createRenderTargets(gpu.format);
   const ground: GroundPipeline = createGroundPipeline(gpu.device, gpu.format, cameraUbo);
   const road: RoadPipeline = createRoadPipeline(gpu.device, gpu.format, cameraUbo);
+  const junction: JunctionCapPipeline = createJunctionCapPipeline(gpu.device, gpu.format, cameraUbo, 4096);
   let vehicle: VehiclePipeline | null = null;
   let building: BuildingPipeline | null = null;
   let zoneOverlay: ZoneOverlayPipeline | null = null;
@@ -112,14 +126,16 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
         lastGraphVersion = graph?.version ?? -1;
         if (graph) {
           uploadCommitted(gpu.device, road, buildRoadMesh(graph));
+          uploadJunctions(gpu.device, junction, collectJunctions(graph));
         } else {
           uploadCommitted(gpu.device, road, { positions: new Float32Array(0), indices: new Uint32Array(0), vertexCount: 0, indexCount: 0 });
+          uploadJunctions(gpu.device, junction, { count: 0, data: new Float32Array(0) });
         }
       }
       if (preview !== lastPreviewRef) {
         lastPreviewRef = preview;
         if (preview) {
-          uploadPreview(gpu.device, road, buildPreviewMesh(preview.p0, preview.c0, preview.c1, preview.p1, DEFAULT_ROAD_OPTS));
+          uploadPreview(gpu.device, road, buildPreviewMesh(preview.p0, preview.c0, preview.c1, preview.p1));
         } else {
           uploadPreview(gpu.device, road, null);
         }
@@ -166,20 +182,22 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
 
     draw: (cam: Camera) => {
       const w = gpu.canvas.width, h = gpu.canvas.height;
-      const depthView = ensureDepth(gpu.device, ground, w, h);
+      ensureRenderTargets(gpu.device, targets, w, h);
       writeCameraUbo(gpu.device, cameraUbo, cam.viewProj, cam.eye);
 
       const encoder = gpu.device.createCommandEncoder();
-      const view = gpu.context.getCurrentTexture().createView();
+      const swap = gpu.context.getCurrentTexture().createView();
       const pass = encoder.beginRenderPass({
         colorAttachments: [{
-          view,
-          clearValue: { r: 0.04, g: 0.05, b: 0.07, a: 1 },
+          view: targets.msColorView!,
+          resolveTarget: swap,
+          // Soft sky color so the horizon doesn't read as a black void.
+          clearValue: { r: 0.55, g: 0.70, b: 0.86, a: 1 },
           loadOp: 'clear',
           storeOp: 'store',
         }],
         depthStencilAttachment: {
-          view: depthView,
+          view: targets.depthView!,
           depthClearValue: 1.0,
           depthLoadOp: 'clear',
           depthStoreOp: 'store',
@@ -187,6 +205,7 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
       });
       drawGround(pass, ground);
       drawRoads(pass, road);
+      drawJunctions(pass, junction);
       if (building) drawBuildings(pass, building);
       if (vehicle) drawVehicles(pass, vehicle);
       if (zoneOverlay) drawZoneOverlay(pass, zoneOverlay);
@@ -196,7 +215,8 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
 
     destroy: () => {
       cameraUbo.destroy();
-      if (ground.depth) ground.depth.destroy();
+      if (targets.msColor) targets.msColor.destroy();
+      if (targets.depth) targets.depth.destroy();
       ground.vbuf.destroy();
       road.vbuf.destroy();
       road.ibuf.destroy();
@@ -204,6 +224,9 @@ const makeWebGpuRenderer = (gpu: GpuContext): Renderer => {
       road.previewIbuf.destroy();
       road.committedStyleUbo.destroy();
       road.previewStyleUbo.destroy();
+      junction.vbuf.destroy();
+      junction.ibuf.destroy();
+      junction.instanceBuf.destroy();
       if (vehicle) {
         vehicle.vbuf.destroy();
         vehicle.ibuf.destroy();

@@ -4,6 +4,7 @@
 
 import type { RoadMesh } from '../../sim/road/mesh';
 import { roadShader } from '../shaders/road.wgsl';
+import { DEPTH_FORMAT, SAMPLE_COUNT } from './renderTargets';
 
 export interface RoadPipeline {
   pipeline: GPURenderPipeline;
@@ -48,10 +49,11 @@ export const createRoadPipeline = (
     vertex: {
       module, entryPoint: 'vs',
       buffers: [{
-        arrayStride: 16,
+        arrayStride: 20,
         attributes: [
-          { shaderLocation: 0, offset: 0, format: 'float32x3' },
-          { shaderLocation: 1, offset: 12, format: 'float32' },
+          { shaderLocation: 0, offset: 0,  format: 'float32x3' }, // pos
+          { shaderLocation: 1, offset: 12, format: 'float32'  }, // edge
+          { shaderLocation: 2, offset: 16, format: 'float32'  }, // along
         ],
       }],
     },
@@ -66,7 +68,8 @@ export const createRoadPipeline = (
       }],
     },
     primitive: { topology: 'triangle-list', cullMode: 'none' },
-    depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
+    depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+    multisample: { count: SAMPLE_COUNT },
   });
 
   const committedStyleUbo = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });

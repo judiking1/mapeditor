@@ -4,6 +4,7 @@
 
 import { zoneOverlayShader } from '../shaders/zoneOverlay.wgsl';
 import type { ZoneGrid } from '../../sim/zoning/grid';
+import { DEPTH_FORMAT, SAMPLE_COUNT } from './renderTargets';
 
 const QUAD_HALF = 4096;
 
@@ -81,7 +82,8 @@ export const createZoneOverlayPipeline = (
     primitive: { topology: 'triangle-list', cullMode: 'none' },
     // No depth write so the overlay sits on top of the ground without
     // occluding roads/buildings.
-    depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' },
+    depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'less-equal' },
+    multisample: { count: SAMPLE_COUNT },
   });
 
   const bindGroup = device.createBindGroup({

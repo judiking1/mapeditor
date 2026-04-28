@@ -3,6 +3,7 @@
 // only `aliveCount` per frame.
 
 import { vehicleShader } from '../shaders/vehicle.wgsl';
+import { DEPTH_FORMAT, SAMPLE_COUNT } from './renderTargets';
 
 const CAR_LEN = 4.4;   // along +Z
 const CAR_WID = 1.85;  // along +X
@@ -91,7 +92,8 @@ export const createVehiclePipeline = (
     },
     fragment: { module, entryPoint: 'fs', targets: [{ format }] },
     primitive: { topology: 'triangle-list', cullMode: 'back' },
-    depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
+    depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+    multisample: { count: SAMPLE_COUNT },
   });
 
   const mesh = buildBoxMesh();

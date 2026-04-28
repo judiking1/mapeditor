@@ -3,6 +3,7 @@
 // per-instance height, so we never rebuild the geometry.
 
 import { buildingShader } from '../shaders/building.wgsl';
+import { DEPTH_FORMAT, SAMPLE_COUNT } from './renderTargets';
 
 export interface BuildingPipeline {
   pipeline: GPURenderPipeline;
@@ -76,7 +77,8 @@ export const createBuildingPipeline = (
     },
     fragment: { module, entryPoint: 'fs', targets: [{ format }] },
     primitive: { topology: 'triangle-list', cullMode: 'back' },
-    depthStencil: { format: 'depth24plus', depthWriteEnabled: true, depthCompare: 'less' },
+    depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'less' },
+    multisample: { count: SAMPLE_COUNT },
   });
 
   const mesh = buildUnitBox();

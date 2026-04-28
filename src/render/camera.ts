@@ -21,10 +21,10 @@ export interface Camera {
 
 export const createCamera = (): Camera => ({
   target: [0, 0, 0],
-  distance: 350,
-  yaw: 0.6,
-  pitch: 0.95,
-  fovYRad: (45 * Math.PI) / 180,
+  distance: 220,
+  yaw: 0.55,
+  pitch: 0.78,
+  fovYRad: (42 * Math.PI) / 180,
   near: 0.5,
   far: 5000,
   aspect: 1,

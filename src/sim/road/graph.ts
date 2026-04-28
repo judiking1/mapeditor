@@ -145,6 +145,37 @@ export const findNearestNode = (
   return bestId;
 };
 
+// Split a segment at bezier parameter t (0..1, exclusive endpoints). Removes
+// the original segment and inserts a new node + two new segments using
+// de Casteljau's subdivision so the two halves trace the exact same curve.
+// Returns the new node id, or null if t is too close to either endpoint.
+export const splitSegment = (g: RoadGraph, segId: number, t: number): number | null => {
+  if (!isSegAlive(g, segId)) return null;
+  if (t < 0.02 || t > 0.98) return null;
+  const { p0, c0, c1, p1 } = getSegmentEndpoints(g, segId);
+  const lerp = (a: Vec3, b: Vec3, k: number): Vec3 => [
+    a[0] + (b[0] - a[0]) * k,
+    a[1] + (b[1] - a[1]) * k,
+    a[2] + (b[2] - a[2]) * k,
+  ];
+  const Q0 = lerp(p0, c0, t);
+  const Q1 = lerp(c0, c1, t);
+  const Q2 = lerp(c1, p1, t);
+  const R0 = lerp(Q0, Q1, t);
+  const R1 = lerp(Q1, Q2, t);
+  const S  = lerp(R0, R1, t);
+
+  const a = g.segNodes[segId * 2]!;
+  const b = g.segNodes[segId * 2 + 1]!;
+  const type = (g.segFlags[segId]! >> 4) & 0xf;
+
+  removeSegment(g, segId);
+  const newNode = addNode(g, S);
+  addSegment(g, a, newNode, Q0, R0, type);
+  addSegment(g, newNode, b, R1, Q2, type);
+  return newNode;
+};
+
 // Closest segment within `tolerance` (meters) on the XZ plane. Returns the
 // segment id and parameter t along its bezier — used for hit-testing erase
 // and (later) splitting.
